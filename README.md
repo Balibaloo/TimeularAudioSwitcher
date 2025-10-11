@@ -2,6 +2,11 @@
 
 A small Windows tray app that switches the system’s default audio input/output devices based on the active side of a Timeular (or similar) BLE tracker.
 
+## Installation
+Download the latest release from the [Releases](https://github.com/Balibaloo/TimeularAudioSwitcher/releases) page and unzip it to a folder of your choice
+
+and run `TimeularAudioSwitcher.exe`.
+
 ## Main features
 - Map up to 8 sides to specific audio devices (separate input and output per side)
 - When the tracker is flipped, automatically switches Windows default playback and recording devices
