@@ -20,11 +20,13 @@ public class MainForm : Form
     private readonly NotifyIcon _tray = new NotifyIcon();
     private readonly ContextMenuStrip _trayMenu = new ContextMenuStrip();
     private readonly Label _lblBleStatus = new Label { AutoSize = true, Text = "BLE: Idle" };
+    private readonly Label _lblBattery = new Label { AutoSize = true, Text = "Battery: --%" };
 
     private TableLayoutPanel _table = null!;
     private Icon? _dynamicIcon;
     private int _activeSide = 0;
     private bool _bleIsConnected = false;
+    private int _batteryPct = -1;
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(IntPtr hIcon);
@@ -124,6 +126,8 @@ public class MainForm : Form
         flow.Controls.Add(_chkStartMinimized);
         flow.Controls.Add(new Label { AutoSize = true, Text = " | " });
         flow.Controls.Add(_lblBleStatus);
+        flow.Controls.Add(new Label { AutoSize = true, Text = " | " });
+        flow.Controls.Add(_lblBattery);
         bottom.Controls.Add(flow);
 
         Controls.Add(_table);
@@ -142,12 +146,38 @@ public class MainForm : Form
         // subscribe to BLE status changes and active side changes
         _ble.StatusChanged += OnBleStatusChanged;
         _ble.SideChanged += OnBleSideChanged;
+        _ble.BatteryChanged += OnBleBatteryChanged;
 
         // Draw initial icon with status dot
         UpdateTrayIcon();
 
         FormClosing += OnFormClosing;
         Resize += OnResize;
+    }
+
+    private void OnBleBatteryChanged(int pct)
+    {
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(new Action(() => HandleBleBatteryChanged(pct))); } catch { }
+        }
+        else
+        {
+            HandleBleBatteryChanged(pct);
+        }
+    }
+
+    private void HandleBleBatteryChanged(int pct)
+    {
+        _batteryPct = Math.Max(0, Math.Min(100, pct));
+        _lblBattery.Text = $"Battery: {_batteryPct}%";
+        if (_batteryPct < 20)
+            _lblBattery.ForeColor = Color.DarkRed;
+        else if (_batteryPct < 50)
+            _lblBattery.ForeColor = Color.DarkOrange;
+        else
+            _lblBattery.ForeColor = Color.DarkGreen;
+        _lblBattery.Refresh();
     }
 
     private void Table_CellPaint(object? sender, TableLayoutCellPaintEventArgs e)

@@ -32,11 +32,13 @@ public class BluetoothService {
 
     public event Action<BleStatus, string>? StatusChanged;
     public event Action<int>? SideChanged;
+    public event Action<int>? BatteryChanged;
 
     // Runtime BLE references and reconnection helpers
     private BluetoothLEDevice? _device;
     private GattCharacteristic? _sideChar;
     private GattCharacteristic? _ctrlChar;
+    private GattCharacteristic? _batteryChar;
     private GattSession? _gattSession;
     private TaskCompletionSource<object?>? _connectionLostTcs;
     private CancellationTokenSource? _reconnectDelayCts;
@@ -166,6 +168,7 @@ public class BluetoothService {
 
         _sideChar = null;
         _ctrlChar = null;
+        _batteryChar = null;
         foreach (var svc in servicesResult.Services)
         {
             var charsResult = await svc.GetCharacteristicsAsync(BluetoothCacheMode.Uncached).AsTask(token);
@@ -181,6 +184,10 @@ public class BluetoothService {
 
                 if (ch.Uuid == Guid.Parse("c7e70001-c847-11e6-8175-8c89a55d403c"))
                     _ctrlChar = ch;
+
+                // Standard Battery Level characteristic UUID 0x2A19
+                if (ch.Uuid == Guid.Parse("00002a19-0000-1000-8000-00805f9b34fb"))
+                    _batteryChar = ch;
             }
         }
 
@@ -242,6 +249,50 @@ public class BluetoothService {
 
         SetStatus(BleStatus.Subscribed, "Indications enabled");
         Logger.Log("Indications enabled for side changes.");
+
+        // --- Battery notifications (if available) ---
+        if (_batteryChar != null)
+        {
+            try
+            {
+                _batteryChar.ValueChanged += Battery_ValueChanged;
+                var batStatus = await _batteryChar.WriteClientCharacteristicConfigurationDescriptorAsync(
+                    GattClientCharacteristicConfigurationDescriptorValue.Notify).AsTask(token);
+                if (batStatus != GattCommunicationStatus.Success)
+                {
+                    Logger.Log($"Battery notify not enabled ({batStatus}); trying one-time read.");
+                    try
+                    {
+                        var read = await _batteryChar.ReadValueAsync(BluetoothCacheMode.Uncached).AsTask(token);
+                        if (read.Status == GattCommunicationStatus.Success)
+                        {
+                            var reader = DataReader.FromBuffer(read.Value);
+                            var data = new byte[read.Value.Length];
+                            reader.ReadBytes(data);
+                            if (data.Length > 0)
+                            {
+                                int pct = Math.Clamp((int)data[0], 0, 100);
+                                try { BatteryChanged?.Invoke(pct); } catch { }
+                                Logger.Log($"Battery (read): {pct}%");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"Battery read failed: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    Logger.Log("Battery notifications enabled.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Error setting up battery notifications: {ex.Message}");
+            }
+        }
+
         return true;
     }
 
@@ -281,6 +332,10 @@ public class BluetoothService {
             {
                 try { _sideChar.ValueChanged -= Characteristic_ValueChanged; } catch { }
             }
+            if (_batteryChar != null)
+            {
+                try { _batteryChar.ValueChanged -= Battery_ValueChanged; } catch { }
+            }
             if (_gattSession != null)
             {
                 try { _gattSession.SessionStatusChanged -= GattSession_SessionStatusChanged; } catch { }
@@ -297,6 +352,7 @@ public class BluetoothService {
         {
             _sideChar = null;
             _ctrlChar = null;
+            _batteryChar = null;
             _gattSession = null;
             _device = null;
         }
@@ -314,6 +370,26 @@ public class BluetoothService {
             }
         }
         catch { }
+    }
+
+    private void Battery_ValueChanged(GattCharacteristic sender, GattValueChangedEventArgs args)
+    {
+        try
+        {
+            var reader = DataReader.FromBuffer(args.CharacteristicValue);
+            var bytes = new byte[args.CharacteristicValue.Length];
+            reader.ReadBytes(bytes);
+            if (bytes.Length > 0)
+            {
+                int pct = Math.Clamp((int)bytes[0], 0, 100);
+                Logger.Log($"Battery notification: {pct}%");
+                try { BatteryChanged?.Invoke(pct); } catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log("Error in Battery_ValueChanged: " + ex);
+        }
     }
 
     private void Characteristic_ValueChanged(GattCharacteristic sender, GattValueChangedEventArgs args) {
