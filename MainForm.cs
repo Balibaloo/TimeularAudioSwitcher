@@ -14,6 +14,7 @@ public class MainForm : Form
 
     private readonly ComboBox[] _inputBoxes = new ComboBox[8];
     private readonly ComboBox[] _outputBoxes = new ComboBox[8];
+    private readonly TextBox[] _nameBoxes = new TextBox[8];
     private readonly Label[] _sideLabels = new Label[8];
     private readonly CheckBox _chkStartOnBoot = new CheckBox { Text = "Start on boot" };
     private readonly CheckBox _chkStartMinimized = new CheckBox { Text = "Start minimized" };
@@ -59,15 +60,17 @@ public class MainForm : Form
         btnExit.Click += (_, __) => Application.Exit();
         topBar.Controls.Add(btnExit);
 
-        _table = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 3, RowCount = 10, AutoSize = true };
-        _table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));
-        _table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        _table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        _table = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 4, RowCount = 10, AutoSize = true };
+        _table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80)); // Side number
+        _table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160)); // Name
+        _table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); // Input
+        _table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); // Output
         _table.CellPaint += Table_CellPaint;
 
         _table.Controls.Add(new Label { Text = "Side", AutoSize = true }, 0, 0);
-        _table.Controls.Add(new Label { Text = "Input", AutoSize = true }, 1, 0);
-        _table.Controls.Add(new Label { Text = "Output", AutoSize = true }, 2, 0);
+        _table.Controls.Add(new Label { Text = "Name", AutoSize = true }, 1, 0);
+        _table.Controls.Add(new Label { Text = "Input", AutoSize = true }, 2, 0);
+        _table.Controls.Add(new Label { Text = "Output", AutoSize = true }, 3, 0);
 
         using var mm = new MMDeviceEnumerator();
         var inputs = GetSafeDeviceNames(mm, DataFlow.Capture, NAudio.CoreAudioApi.DeviceState.Active);
@@ -82,6 +85,7 @@ public class MainForm : Form
             _table.Controls.Add(lbl, 0, row);
             _sideLabels[i] = lbl;
 
+            var nameBox = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "Name" };
             var cbIn = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
             var cbOut = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
             cbIn.Items.AddRange(inputsWithBlank);
@@ -102,16 +106,23 @@ public class MainForm : Form
                     var outVal = outputs.FirstOrDefault(s => s != null && s.IndexOf(side.Output, StringComparison.InvariantCultureIgnoreCase) >= 0);
                     if (outVal != null) cbOut.SelectedItem = outVal;
                 }
+                if (!string.IsNullOrWhiteSpace(side.Name))
+                {
+                    nameBox.Text = side.Name;
+                }
             }
 
             int sideIdx = i + 1;
             cbIn.SelectionChangeCommitted += (_, __) => { OnDeviceChanged(sideIdx, isInput: true); SaveConfig(); };
             cbOut.SelectionChangeCommitted += (_, __) => { OnDeviceChanged(sideIdx, isInput: false); SaveConfig(); };
+            nameBox.TextChanged += (_, __) => { OnNameChanged(sideIdx); SaveConfig(); BuildTrayMenu(); UpdateTrayIcon(); };
 
             _inputBoxes[i] = cbIn;
             _outputBoxes[i] = cbOut;
-            _table.Controls.Add(cbIn, 1, row);
-            _table.Controls.Add(cbOut, 2, row);
+            _nameBoxes[i] = nameBox;
+            _table.Controls.Add(nameBox, 1, row);
+            _table.Controls.Add(cbIn, 2, row);
+            _table.Controls.Add(cbOut, 3, row);
         }
 
         _chkStartOnBoot.Checked = StartupManager.IsEnabled() || _cfg.StartOnBoot;
@@ -153,6 +164,25 @@ public class MainForm : Form
 
         FormClosing += OnFormClosing;
         Resize += OnResize;
+    }
+
+    private void OnNameChanged(int side)
+    {
+        try
+        {
+            var key = side.ToString();
+            var name = _nameBoxes[side - 1].Text?.Trim() ?? string.Empty;
+            if (!_cfg.SideToDevice.TryGetValue(key, out var current))
+            {
+                current = new SideAudioConfig(string.Empty, string.Empty, name);
+            }
+            var updated = new SideAudioConfig(current.Input, current.Output, name);
+            _cfg.SideToDevice[key] = updated;
+        }
+        catch (Exception ex)
+        {
+            try { Logger.Log("Error applying name change: " + ex.Message); } catch { }
+        }
     }
 
     private void OnBleBatteryChanged(int pct)
@@ -204,8 +234,8 @@ public class MainForm : Form
             }
 
             var newConfig = isInput
-                ? new SideAudioConfig(inputName, current.Output)
-                : new SideAudioConfig(current.Input, outputName);
+                ? new SideAudioConfig(inputName, current.Output, current.Name)
+                : new SideAudioConfig(current.Input, outputName, current.Name);
 
             _cfg.SideToDevice[key] = newConfig; // keep runtime mapping in sync
 
@@ -275,13 +305,27 @@ public class MainForm : Form
             var old = _dynamicIcon;
             _dynamicIcon = newIcon;
             _tray.Icon = newIcon;
-            _tray.Text = _activeSide >= 1 ? $"Timeular Audio Switcher - Side {_activeSide}" : "Timeular Audio Switcher";
+            var name = GetSideName(_activeSide);
+            _tray.Text = _activeSide >= 1
+                ? (!string.IsNullOrWhiteSpace(name) ? $"Timeular Audio Switcher - Side {_activeSide} — {name}" : $"Timeular Audio Switcher - Side {_activeSide}")
+                : "Timeular Audio Switcher";
             old?.Dispose();
         }
         catch (Exception ex)
         {
             try { Logger.Log("Failed to update tray icon: " + ex.Message); } catch { }
         }
+    }
+
+    private string GetSideName(int side)
+    {
+        if (side < 1 || side > 8) return string.Empty;
+        var key = side.ToString();
+        if (_cfg.SideToDevice.TryGetValue(key, out var map))
+        {
+            return map.Name ?? string.Empty;
+        }
+        return string.Empty;
     }
 
     private static Icon CreateTrayIcon(int number, bool isConnected)
@@ -413,11 +457,28 @@ public class MainForm : Form
 
     private void BuildTrayMenu()
     {
+        // Dispose previous images to avoid GDI leaks when rebuilding the menu
+        foreach (ToolStripItem it in _trayMenu.Items)
+        {
+            if (it is ToolStripMenuItem mi && mi.Image != null)
+            {
+                try { mi.Image.Dispose(); } catch { }
+                mi.Image = null;
+            }
+        }
+
         _trayMenu.Items.Clear();
+        _trayMenu.ShowImageMargin = true; // gray column is the image margin; we'll use it for side numbers
         for (int i = 1; i <= 8; i++)
         {
             int side = i;
-            var item = new ToolStripMenuItem($"Trigger side {side}");
+            var name = GetSideName(side);
+            var text = string.IsNullOrWhiteSpace(name) ? $"" : $"{name}";
+            var item = new ToolStripMenuItem(text)
+            {
+                Image = CreateMenuNumberImage(side),
+                ImageScaling = ToolStripItemImageScaling.None
+            };
             item.Click += (_, __) => TriggerSide(side);
             _trayMenu.Items.Add(item);
         }
@@ -425,6 +486,74 @@ public class MainForm : Form
         var exit = new ToolStripMenuItem("Exit");
         exit.Click += (_, __) => Application.Exit();
         _trayMenu.Items.Add(exit);
+    }
+
+    private static Image CreateMenuNumberImage(int number)
+    {
+        int size = 16; // menu image margin size
+        var bmp = new Bitmap(size, size);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            g.Clear(Color.White); // white background, no padding
+
+            var text = number.ToString();
+
+            // Build reference path for the scale using digit "8" to ensure consistent sizing across digits
+            using var fontFamily = new FontFamily("Segoe UI");
+            float emSize = 16f; // baseline EM size for initial path (points)
+            var style = FontStyle.Bold;
+            using var refPath = new System.Drawing.Drawing2D.GraphicsPath();
+            refPath.AddString("8", fontFamily, (int)style, emSize, new Point(0, 0), new StringFormat());
+            var refBounds = refPath.GetBounds();
+            if (refBounds.Width <= 0 || refBounds.Height <= 0)
+            {
+                // Fallback simple draw
+                TextRenderer.DrawText(g, text, new Font("Segoe UI", 12, FontStyle.Bold, GraphicsUnit.Pixel), new Rectangle(0, 0, size, size), Color.Black,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                return bmp;
+            }
+
+            // Minimal sub-pixel padding for anti-aliasing edges
+            float pad = 0.9f;
+            float availW = size - (pad * 2f);
+            float availH = size - (pad * 2f);
+
+            // Uniform scale based on reference glyph so all digits render at the same size
+            float uniformScale = Math.Min(availW / refBounds.Width, availH / refBounds.Height);
+
+            using var path = new System.Drawing.Drawing2D.GraphicsPath();
+            path.AddString(text, fontFamily, (int)style, emSize, new Point(0, 0), new StringFormat());
+            var bounds = path.GetBounds();
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+            {
+                TextRenderer.DrawText(g, text, new Font("Segoe UI", 12, FontStyle.Bold, GraphicsUnit.Pixel), new Rectangle(0, 0, size, size), Color.Black,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+                return bmp;
+            }
+
+            using (var m = new System.Drawing.Drawing2D.Matrix())
+            {
+                m.Translate(-bounds.X, -bounds.Y);
+                m.Scale(uniformScale, uniformScale);
+                path.Transform(m);
+            }
+
+            // Center within the padded area
+            var newBounds = path.GetBounds();
+            float offsetX = pad + (availW - newBounds.Width) / 2f - newBounds.X;
+            float offsetY = pad + (availH - newBounds.Height) / 2f - newBounds.Y;
+            using (var m2 = new System.Drawing.Drawing2D.Matrix())
+            {
+                m2.Translate(offsetX, offsetY);
+                path.Transform(m2);
+            }
+
+            using var brush = new SolidBrush(Color.Black);
+            g.FillPath(brush, path);
+        }
+        return bmp;
     }
 
     private void TriggerSide(int side)
@@ -474,7 +603,8 @@ public class MainForm : Form
             var key = (i + 1).ToString();
             var input = _inputBoxes[i].SelectedItem as string ?? string.Empty;
             var output = _outputBoxes[i].SelectedItem as string ?? string.Empty;
-            updated[key] = new SideAudioConfig(input, output);
+            var name = _nameBoxes[i].Text?.Trim() ?? string.Empty;
+            updated[key] = new SideAudioConfig(input, output, string.IsNullOrWhiteSpace(name) ? null : name);
         }
 
         _cfg.SideToDevice.Clear();

@@ -3,7 +3,8 @@ using System.Text.Json.Serialization;
 
 public record SideAudioConfig(
     [property: JsonPropertyName("input")] string Input,
-    [property: JsonPropertyName("output")] string Output
+    [property: JsonPropertyName("output")] string Output,
+    [property: JsonPropertyName("name")] string? Name = null
 );
 
 public record AppConfig(
