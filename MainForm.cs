@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Text.Json;
 using System.Windows.Forms;
@@ -15,7 +15,7 @@ public class MainForm : Form
     private readonly ComboBox[] _inputBoxes = new ComboBox[8];
     private readonly ComboBox[] _outputBoxes = new ComboBox[8];
     private readonly TextBox[] _nameBoxes = new TextBox[8];
-    private readonly Label[] _sideLabels = new Label[8];
+    private readonly Panel[] _sideLabelContainers = new Panel[8];
     private readonly CheckBox _chkStartOnBoot = new CheckBox { Text = "Start on boot" };
     private readonly CheckBox _chkStartMinimized = new CheckBox { Text = "Start minimized" };
     private readonly NotifyIcon _tray = new NotifyIcon();
@@ -61,7 +61,7 @@ public class MainForm : Form
         topBar.Controls.Add(btnExit);
 
         _table = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 4, RowCount = 10, AutoSize = true };
-        _table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80)); // Side number
+        _table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60)); // Side number
         _table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160)); // Name
         _table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); // Input
         _table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); // Output
@@ -81,9 +81,22 @@ public class MainForm : Form
         for (int i = 0; i < 8; i++)
         {
             var row = i + 1;
-            var lbl = new Label { Text = (i + 1).ToString(), AutoSize = true };
-            _table.Controls.Add(lbl, 0, row);
-            _sideLabels[i] = lbl;
+
+            var lblContainer = new Panel { Dock = DockStyle.Fill, Padding = new Padding(0), Height=23 };
+            var lbl = new Label { Text = (i + 1).ToString(), AutoSize = true, Padding= new Padding(0,4,0,0) };
+            var activateButton = new Button
+            {
+                Text = ">",
+                Dock = DockStyle.Right,
+                Width = 35,
+                FlatStyle = FlatStyle.System,
+                TabStop = false,
+            };
+            activateButton.Click += (_, __) => TriggerSide(row);
+            lblContainer.Controls.Add(lbl);
+            lblContainer.Controls.Add(activateButton);
+            _table.Controls.Add(lblContainer, 0, row);
+            _sideLabelContainers[i] = lblContainer;
 
             var nameBox = new TextBox { Dock = DockStyle.Fill, PlaceholderText = "Name" };
             var cbIn = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
@@ -280,8 +293,8 @@ public class MainForm : Form
         {
             _inputBoxes[i].BackColor = SystemColors.Window;
             _outputBoxes[i].BackColor = SystemColors.Window;
-            _sideLabels[i].BackColor = SystemColors.Control;
-            _sideLabels[i].ForeColor = SystemColors.ControlText;
+            _sideLabelContainers[i].BackColor = SystemColors.Control;
+            _sideLabelContainers[i].ForeColor = SystemColors.ControlText;
         }
 
         if (_activeSide >= 1 && _activeSide <= 8)
@@ -290,8 +303,8 @@ public class MainForm : Form
             var grey = Color.FromArgb(192, 192, 192); // darker cohesive control background
             _inputBoxes[idx].BackColor = grey;
             _outputBoxes[idx].BackColor = grey;
-            _sideLabels[idx].BackColor = grey;
-            _sideLabels[idx].ForeColor = Color.Black;
+            _sideLabelContainers[idx].BackColor = grey;
+            _sideLabelContainers[idx].ForeColor = Color.Black;
         }
 
         _table.Invalidate();
@@ -307,7 +320,7 @@ public class MainForm : Form
             _tray.Icon = newIcon;
             var name = GetSideName(_activeSide);
             _tray.Text = _activeSide >= 1
-                ? (!string.IsNullOrWhiteSpace(name) ? $"Timeular Audio Switcher - Side {_activeSide} � {name}" : $"Timeular Audio Switcher - Side {_activeSide}")
+                ? (!string.IsNullOrWhiteSpace(name) ? $"Timeular Audio Switcher - Side {_activeSide} — {name}" : $"Timeular Audio Switcher - Side {_activeSide}")
                 : "Timeular Audio Switcher";
             old?.Dispose();
         }
