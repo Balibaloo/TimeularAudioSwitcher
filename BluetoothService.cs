@@ -43,6 +43,11 @@ public class BluetoothService {
     private TaskCompletionSource<object?>? _connectionLostTcs;
     private CancellationTokenSource? _reconnectDelayCts;
 
+    // Watchdog / keepalive helpers
+    private DateTime _lastNotification = DateTime.MinValue;
+    private CancellationTokenSource? _keepaliveCts;
+    private Task? _keepaliveTask;
+
     public BluetoothService(AppConfig cfg, AudioSwitcher audio) {
         _cfg = cfg;
         _audio = audio;
@@ -293,7 +298,138 @@ public class BluetoothService {
             }
         }
 
+        // Start keepalive/watchdog task to detect silent failures and try to re-enable or reconnect
+        try
+        {
+            _lastNotification = DateTime.UtcNow;
+            _keepaliveCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            _keepaliveTask = Task.Run(() => MonitorConnectionAsync(_keepaliveCts.Token));
+        }
+        catch (Exception ex)
+        {
+            Logger.Log($"Failed to start keepalive task: {ex.Message}");
+        }
+
         return true;
+    }
+
+    private async Task MonitorConnectionAsync(CancellationToken token)
+    {
+        // Watchdog parameters
+        TimeSpan checkInterval = TimeSpan.FromSeconds(8);
+        TimeSpan idleThreshold = TimeSpan.FromSeconds(30);
+        TimeSpan keepaliveInterval = TimeSpan.FromSeconds(15);
+
+        DateTime lastKeepalive = DateTime.UtcNow;
+
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(checkInterval, token);
+            }
+            catch (OperationCanceledException) { break; }
+
+            try
+            {
+                // If no notifications for a while, try to refresh the subscription or trigger a reconnect
+                var since = DateTime.UtcNow - _lastNotification;
+                if (since > idleThreshold)
+                {
+                    Logger.Log($"No notifications for {since.TotalSeconds:F0}s. Attempting to re-enable indications or trigger reconnect.");
+
+                    // Try re-enabling indications first
+                    if (_sideChar != null)
+                    {
+                        try
+                        {
+                            var cfgStatus = await _sideChar.WriteClientCharacteristicConfigurationDescriptorAsync(
+                                GattClientCharacteristicConfigurationDescriptorValue.Indicate).AsTask(token);
+                            Logger.Log($"Re-enabled indications: {cfgStatus}");
+                            if (cfgStatus == GattCommunicationStatus.Success)
+                            {
+                                // Reset timestamp and continue watching
+                                _lastNotification = DateTime.UtcNow;
+                                continue;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"Re-enable indications failed: {ex.Message}");
+                        }
+                    }
+
+                    // If re-enable didn't work, try a keepalive write/read to nudge device awake
+                    bool keepaliveSucceeded = false;
+                    if (_ctrlChar != null)
+                    {
+                        try
+                        {
+                            var handshake = new byte[] { 0x01 };
+                            var r = await _ctrlChar.WriteValueAsync(handshake.AsBuffer()).AsTask(token);
+                            Logger.Log($"Sent keepalive handshake: {r}");
+                            keepaliveSucceeded = r == GattCommunicationStatus.Success;
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"Keepalive write failed: {ex.Message}");
+                        }
+                    }
+                    else if (_sideChar != null)
+                    {
+                        try
+                        {
+                            var read = await _sideChar.ReadValueAsync(BluetoothCacheMode.Uncached).AsTask(token);
+                            Logger.Log($"Keepalive read status: {read.Status}");
+                            keepaliveSucceeded = read.Status == GattCommunicationStatus.Success;
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"Keepalive read failed: {ex.Message}");
+                        }
+                    }
+
+                    if (!keepaliveSucceeded)
+                    {
+                        // Nothing worked: trigger connection lost to force a reconnect
+                        Logger.Log("Watchdog: keepalive failed; triggering reconnect.");
+                        _connectionLostTcs?.TrySetResult(null);
+                        break;
+                    }
+                    else
+                    {
+                        // Keepalive succeeded -- update last notification to avoid immediate reconnect
+                        _lastNotification = DateTime.UtcNow;
+                    }
+                }
+
+                // Periodic keepalive even if notifications are flowing, to keep device awake
+                if (DateTime.UtcNow - lastKeepalive > keepaliveInterval)
+                {
+                    lastKeepalive = DateTime.UtcNow;
+                    if (_ctrlChar != null)
+                    {
+                        try
+                        {
+                            var handshake = new byte[] { 0x01 };
+                            var r = await _ctrlChar.WriteValueAsync(handshake.AsBuffer()).AsTask(token);
+                            Logger.Log($"Periodic keepalive handshake: {r}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Logger.Log($"Periodic keepalive failed: {ex.Message}");
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                Logger.Log($"Exception in MonitorConnectionAsync: {ex}");
+            }
+        }
+
+        Logger.Log("Watchdog task exiting.");
     }
 
     private void GattSession_SessionStatusChanged(GattSession sender, GattSessionStatusChangedEventArgs args)
@@ -328,6 +464,12 @@ public class BluetoothService {
     {
         try
         {
+            // Stop watchdog / keepalive
+            try { _keepaliveCts?.Cancel(); } catch { }
+            _keepaliveCts?.Dispose();
+            _keepaliveCts = null;
+            _keepaliveTask = null;
+
             if (_sideChar != null)
             {
                 try { _sideChar.ValueChanged -= Characteristic_ValueChanged; } catch { }
@@ -404,6 +546,9 @@ public class BluetoothService {
                 Logger.Log("Empty payload.");
                 return;
             }
+
+            // Update last-notification timestamp for watchdog
+            _lastNotification = DateTime.UtcNow;
 
             // First byte = side ID (1..8)
             var sideId = bytes[0];
