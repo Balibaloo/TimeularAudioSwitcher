@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json;
 using System.Windows.Forms;
 
 class Program
@@ -22,7 +23,7 @@ class Program
             return 2;
         }
 
-        //Logger.Init(cfg.LogPath);
+        Logger.Init(cfg.LogPath);
         Logger.Log($"Starting TimeularAudioSwitcher (PID {Environment.ProcessId})");
 
         Application.SetHighDpiMode(HighDpiMode.SystemAware);
@@ -33,7 +34,8 @@ class Program
         var ble = new BluetoothService(cfg, audio);
 
         // Start BLE listener in background
-        _ = Task.Run(() => ble.RunAsync());
+        var bleTask = Task.Run(() => ble.RunAsync());
+        Application.ApplicationExit += (_, __) => ble.Stop();
 
         var form = new MainForm(cfg, audio, ble);
         if (cfg.StartMinimized)
@@ -43,6 +45,18 @@ class Program
         }
 
         Application.Run(form);
+
+        // Clean shutdown
+        ble.Stop();
+        try
+        {
+            await bleTask;
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected during shutdown
+        }
+
         return 0;
     }
 }

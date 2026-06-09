@@ -144,6 +144,7 @@ public class AudioSwitcher {
     private DateTime _cacheBuiltAt = DateTime.MinValue;
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(15);
 
+    private readonly object _policyLock = new();
     private object? _policyObj;
     private IPolicyConfig? _policyConfig;
     private IPolicyConfigVista? _policyConfigVista;
@@ -156,15 +157,21 @@ public class AudioSwitcher {
 
     private void EnsurePolicyConfig() {
         if (_policyObj != null || _policyConfig != null || _policyConfigVista != null) return;
-        try {
-            var clsid = new Guid("870af99c-171d-4f9e-af0d-e63df40c2bc9"); // PolicyConfigClient
-            var type = Type.GetTypeFromCLSID(clsid);
-            if (type == null) { Logger.Log("PolicyConfigClient class not found."); return; }
-            _policyObj = Activator.CreateInstance(type);
-            _policyConfig = _policyObj as IPolicyConfig;
-            _policyConfigVista = _policyObj as IPolicyConfigVista;
-        } catch (Exception ex) {
-            Logger.Log("Failed to create PolicyConfig COM instance: " + ex.Message);
+
+        lock (_policyLock)
+        {
+            if (_policyObj != null || _policyConfig != null || _policyConfigVista != null) return;
+
+            try {
+                var clsid = new Guid("870af99c-171d-4f9e-af0d-e63df40c2bc9"); // PolicyConfigClient
+                var type = Type.GetTypeFromCLSID(clsid);
+                if (type == null) { Logger.Log("PolicyConfigClient class not found."); return; }
+                _policyObj = Activator.CreateInstance(type);
+                _policyConfig = _policyObj as IPolicyConfig;
+                _policyConfigVista = _policyObj as IPolicyConfigVista;
+            } catch (Exception ex) {
+                Logger.Log("Failed to create PolicyConfig COM instance: " + ex.Message);
+            }
         }
     }
 
@@ -231,22 +238,37 @@ public class AudioSwitcher {
         return string.IsNullOrEmpty(kv.Key) ? null : kv.Value;
     }
 
+    private static bool IsSuccess(int hr)
+    {
+        return hr >= 0;
+    }
+
     private bool TrySetDefaultEndpoint(string id) {
         try {
             EnsurePolicyConfig();
             if (_policyConfig != null) {
-                int hr = _policyConfig.SetDefaultEndpoint(id, ERole.eConsole);
-                if (hr != 0) return false;
-                _policyConfig.SetDefaultEndpoint(id, ERole.eMultimedia);
-                _policyConfig.SetDefaultEndpoint(id, ERole.eCommunications);
-                return true;
+                int hrConsole = _policyConfig.SetDefaultEndpoint(id, ERole.eConsole);
+                int hrMultimedia = _policyConfig.SetDefaultEndpoint(id, ERole.eMultimedia);
+                int hrCommunications = _policyConfig.SetDefaultEndpoint(id, ERole.eCommunications);
+
+                bool ok = IsSuccess(hrConsole) && IsSuccess(hrMultimedia) && IsSuccess(hrCommunications);
+                if (!ok)
+                {
+                    Logger.Log($"SetDefaultEndpoint failed (IPolicyConfig): console=0x{hrConsole:X8}, multimedia=0x{hrMultimedia:X8}, communications=0x{hrCommunications:X8}");
+                }
+                return ok;
             }
             if (_policyConfigVista != null) {
-                int hr = _policyConfigVista.SetDefaultEndpoint(id, ERole.eConsole);
-                if (hr != 0) return false;
-                _policyConfigVista.SetDefaultEndpoint(id, ERole.eMultimedia);
-                _policyConfigVista.SetDefaultEndpoint(id, ERole.eCommunications);
-                return true;
+                int hrConsole = _policyConfigVista.SetDefaultEndpoint(id, ERole.eConsole);
+                int hrMultimedia = _policyConfigVista.SetDefaultEndpoint(id, ERole.eMultimedia);
+                int hrCommunications = _policyConfigVista.SetDefaultEndpoint(id, ERole.eCommunications);
+
+                bool ok = IsSuccess(hrConsole) && IsSuccess(hrMultimedia) && IsSuccess(hrCommunications);
+                if (!ok)
+                {
+                    Logger.Log($"SetDefaultEndpoint failed (IPolicyConfigVista): console=0x{hrConsole:X8}, multimedia=0x{hrMultimedia:X8}, communications=0x{hrCommunications:X8}");
+                }
+                return ok;
             }
             Logger.Log("No PolicyConfig interface available.");
         }
@@ -259,8 +281,7 @@ public class AudioSwitcher {
     private static bool IsAlreadyDefault(string deviceId, DataFlow flow) {
         try {
             using var mm = new MMDeviceEnumerator();
-            var df = flow == DataFlow.Render ? DataFlow.Render : DataFlow.Capture;
-            var def = mm.GetDefaultAudioEndpoint(df, Role.Multimedia);
+            var def = mm.GetDefaultAudioEndpoint(flow, Role.Multimedia);
             return def != null && string.Equals(def.ID, deviceId, StringComparison.OrdinalIgnoreCase);
         } catch { return false; }
     }

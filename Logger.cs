@@ -2,7 +2,7 @@ using System.Text;
 
 static class Logger
 {
-    static object _lock = new();
+    static readonly object _lock = new();
     static string? _logPath;
 
     public static void Init(string logPath)

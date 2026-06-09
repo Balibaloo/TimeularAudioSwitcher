@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Text.Json.Serialization;
 
 public record SideAudioConfig(
@@ -7,11 +7,24 @@ public record SideAudioConfig(
     [property: JsonPropertyName("name")] string? Name = null
 );
 
-public record AppConfig(
-    [property: JsonPropertyName("bluetoothAddress")] string BluetoothAddress,
-    [property: JsonPropertyName("characteristicUuid")] string? CharacteristicUuid,
-    [property: JsonPropertyName("sideToDevice")] Dictionary<string, SideAudioConfig> SideToDevice,
-    [property: JsonPropertyName("logPath")] string LogPath,
-    [property: JsonPropertyName("startOnBoot")] bool StartOnBoot = false,
-    [property: JsonPropertyName("startMinimized")] bool StartMinimized = true
-);
+public sealed class AppConfig
+{
+    [JsonPropertyName("bluetoothAddress")]
+    public string BluetoothAddress { get; init; } = string.Empty;
+
+    [JsonPropertyName("characteristicUuid")]
+    public string? CharacteristicUuid { get; init; }
+
+    [JsonPropertyName("sideToDevice")]
+    [JsonConverter(typeof(ConcurrentDictionaryConverter<string, SideAudioConfig>))]
+    public ConcurrentDictionary<string, SideAudioConfig> SideToDevice { get; init; } = new();
+
+    [JsonPropertyName("logPath")]
+    public string LogPath { get; init; } = string.Empty;
+
+    [JsonPropertyName("startOnBoot")]
+    public bool StartOnBoot { get; init; }
+
+    [JsonPropertyName("startMinimized")]
+    public bool StartMinimized { get; init; } = true;
+}

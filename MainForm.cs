@@ -28,6 +28,7 @@ public class MainForm : Form
     private int _activeSide = 0;
     private bool _bleIsConnected = false;
     private int _batteryPct = -1;
+    private System.Windows.Forms.Timer? _saveDebounceTimer;
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(IntPtr hIcon);
@@ -37,6 +38,14 @@ public class MainForm : Form
         _cfg = cfg;
         _audioSwitcher = audioSwitcher;
         _ble = ble;
+
+        // Initialize debounce timer for save operations
+        _saveDebounceTimer = new System.Windows.Forms.Timer { Interval = 400 };
+        _saveDebounceTimer.Tick += (_, __) =>
+        {
+            _saveDebounceTimer.Stop();
+            SaveConfigNow();
+        };
 
         Text = "Timeular Audio Switcher";
         Width = 900;
@@ -128,7 +137,7 @@ public class MainForm : Form
             int sideIdx = i + 1;
             cbIn.SelectionChangeCommitted += (_, __) => { OnDeviceChanged(sideIdx, isInput: true); SaveConfig(); };
             cbOut.SelectionChangeCommitted += (_, __) => { OnDeviceChanged(sideIdx, isInput: false); SaveConfig(); };
-            nameBox.TextChanged += (_, __) => { OnNameChanged(sideIdx); SaveConfig(); BuildTrayMenu(); UpdateTrayIcon(); };
+            nameBox.TextChanged += (_, __) => { OnNameChanged(sideIdx); SaveConfigDebounced(); BuildTrayMenu(); UpdateTrayIcon(); };
 
             _inputBoxes[i] = cbIn;
             _outputBoxes[i] = cbOut;
@@ -364,9 +373,10 @@ public class MainForm : Form
                 var text = number.ToString();
                 float fontSize = size.Height; // start big
                 Size textSize;
-                Font font;
+                Font? font = null;
                 do
                 {
+                    font?.Dispose();
                     font = new Font("Segoe UI", fontSize, FontStyle.Bold, GraphicsUnit.Pixel);
                     textSize = TextRenderer.MeasureText(text, font, size, TextFormatFlags.NoPadding);
                     fontSize -= 1f;
@@ -606,11 +616,23 @@ public class MainForm : Form
         }
     }
 
+    private void SaveConfigDebounced()
+    {
+        _saveDebounceTimer?.Stop();
+        _saveDebounceTimer?.Start();
+    }
+
     private void SaveConfig()
+    {
+        _saveDebounceTimer?.Stop();
+        SaveConfigNow();
+    }
+
+    private void SaveConfigNow()
     {
         StartupManager.Set(_chkStartOnBoot.Checked);
 
-        var updated = new System.Collections.Generic.Dictionary<string, SideAudioConfig>();
+        var updated = new System.Collections.Concurrent.ConcurrentDictionary<string, SideAudioConfig>();
         for (int i = 0; i < 8; i++)
         {
             var key = (i + 1).ToString();
@@ -624,14 +646,15 @@ public class MainForm : Form
         foreach (var kvp in updated)
             _cfg.SideToDevice[kvp.Key] = kvp.Value;
 
-        var cfgToSave = new AppConfig(
-            _cfg.BluetoothAddress,
-            _cfg.CharacteristicUuid,
-            updated,
-            _cfg.LogPath,
-            _chkStartOnBoot.Checked,
-            _chkStartMinimized.Checked
-        );
+        var cfgToSave = new AppConfig
+        {
+            BluetoothAddress = _cfg.BluetoothAddress,
+            CharacteristicUuid = _cfg.CharacteristicUuid,
+            SideToDevice = updated,
+            LogPath = _cfg.LogPath,
+            StartOnBoot = _chkStartOnBoot.Checked,
+            StartMinimized = _chkStartMinimized.Checked
+        };
 
         try
         {
@@ -643,7 +666,7 @@ public class MainForm : Form
         }
         catch (Exception ex)
         {
-            MessageBox.Show("Failed to save config: " + ex.Message);
+        MessageBox.Show("Failed to save config: " + ex.Message);
         }
     }
 }

@@ -44,7 +44,7 @@ public class BluetoothService {
     private CancellationTokenSource? _reconnectDelayCts;
 
     // Watchdog / keepalive helpers
-    private DateTime _lastNotification = DateTime.MinValue;
+    private long _lastNotificationTicks = DateTime.MinValue.Ticks;
     private CancellationTokenSource? _keepaliveCts;
     private Task? _keepaliveTask;
 
@@ -52,6 +52,16 @@ public class BluetoothService {
         _cfg = cfg;
         _audio = audio;
         try { SystemEvents.PowerModeChanged += OnPowerModeChanged; } catch { }
+    }
+
+    private static DateTime ReadUtcFromTicks(long ticks)
+    {
+        return new DateTime(ticks, DateTimeKind.Utc);
+    }
+
+    private void MarkNotificationNowUtc()
+    {
+        Interlocked.Exchange(ref _lastNotificationTicks, DateTime.UtcNow.Ticks);
     }
 
     private void SetStatus(BleStatus status, string message)
@@ -64,6 +74,8 @@ public class BluetoothService {
     public void Stop()
     {
         try { _cts.Cancel(); } catch { }
+        try { _reconnectDelayCts?.Cancel(); } catch { }
+        try { _connectionLostTcs?.TrySetCanceled(); } catch { }
     }
 
     public async Task RunAsync() {
@@ -96,8 +108,21 @@ public class BluetoothService {
                     int delay = backoffSeconds[Math.Min(backoffIndex, backoffSeconds.Length - 1)];
                     backoffIndex = Math.Min(backoffIndex + 1, backoffSeconds.Length - 1);
                     Logger.Log($"Reconnect in {delay}s...");
+
+                    _reconnectDelayCts?.Dispose();
                     _reconnectDelayCts = new CancellationTokenSource();
-                    try { await Task.Delay(TimeSpan.FromSeconds(delay), CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, _reconnectDelayCts.Token).Token); } catch { }
+
+                    using var linkedDelayCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, _reconnectDelayCts.Token);
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(delay), linkedDelayCts.Token);
+                    }
+                    catch
+                    {
+                    }
+
+                    _reconnectDelayCts.Dispose();
+                    _reconnectDelayCts = null;
                     continue;
                 }
 
@@ -301,13 +326,13 @@ public class BluetoothService {
         // Start keepalive/watchdog task to detect silent failures and try to re-enable or reconnect
         try
         {
-            _lastNotification = DateTime.UtcNow;
+            MarkNotificationNowUtc();
             _keepaliveCts = CancellationTokenSource.CreateLinkedTokenSource(token);
             _keepaliveTask = Task.Run(() => MonitorConnectionAsync(_keepaliveCts.Token));
         }
         catch (Exception ex)
         {
-            Logger.Log($"Failed to start keepalive task: {ex.Message}");
+            Logger.Log($"Failed to start keepalive task: {ex.Message} ");
         }
 
         return true;
@@ -333,7 +358,8 @@ public class BluetoothService {
             try
             {
                 // If no notifications for a while, try to refresh the subscription or trigger a reconnect
-                var since = DateTime.UtcNow - _lastNotification;
+                var lastNotificationUtc = ReadUtcFromTicks(Interlocked.Read(ref _lastNotificationTicks));
+                var since = DateTime.UtcNow - lastNotificationUtc;
                 if (since > idleThreshold)
                 {
                     Logger.Log($"No notifications for {since.TotalSeconds:F0}s. Attempting to re-enable indications or trigger reconnect.");
@@ -349,7 +375,7 @@ public class BluetoothService {
                             if (cfgStatus == GattCommunicationStatus.Success)
                             {
                                 // Reset timestamp and continue watching
-                                _lastNotification = DateTime.UtcNow;
+                                MarkNotificationNowUtc();
                                 continue;
                             }
                         }
@@ -399,7 +425,7 @@ public class BluetoothService {
                     else
                     {
                         // Keepalive succeeded -- update last notification to avoid immediate reconnect
-                        _lastNotification = DateTime.UtcNow;
+                        MarkNotificationNowUtc();
                     }
                 }
 
@@ -548,7 +574,7 @@ public class BluetoothService {
             }
 
             // Update last-notification timestamp for watchdog
-            _lastNotification = DateTime.UtcNow;
+            MarkNotificationNowUtc();
 
             // First byte = side ID (1..8)
             var sideId = bytes[0];
